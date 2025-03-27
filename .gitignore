@@ -1,3 +1,4 @@
 .vscode
 .env
 .venv
+papers/data-csv/*

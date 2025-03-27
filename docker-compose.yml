@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  # Map port host ke container
+    volumes:
+      - ./papers:/app/papers  # Sinkronkan app papers (opsional untuk dev)
+      - ./recommendation_app:/app/recommendation_app  # Sinkronkan proyek Django
+    environment:
+      - DJANGO_SETTINGS_MODULE=recommendation_app.settings  # Pastikan settings module
+    env_file:
+      - .env  # Load variabel lingkungan dari .env
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  neo4j:
+    image: neo4j:5.26.4
+    ports:
+      - "7474:7474"  # HTTP port untuk Neo4j browser
+      - "7687:7687"  # Bolt port untuk koneksi
+    environment:
+      - NEO4J_AUTH=neo4j/alfien0310  # Ganti dengan password Anda
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:7474"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - neo4j-data:/data  # Simpan data Neo4j secara persisten
+
+volumes:
+  neo4j-data:  # Volume untuk data Neo4j

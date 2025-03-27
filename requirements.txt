@@ -1,2 +1,7 @@
 Django
 SemanticScholar
+python-dotenv
+langchain_community
+neomodel
+pandas
+gunicorn
