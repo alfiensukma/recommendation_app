@@ -1,20 +1,22 @@
-# Gunakan base image Python
-FROM python:3.9-slim
+# Gunakan Python base image
+FROM python:3.10-slim
 
-# Set working directory
+# Set environment vars
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set workdir
 WORKDIR /app
 
-# Instal dependensi sistem (jika diperlukan)
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Salin semua project
+COPY . /app/
 
-# Salin dan instal dependensi Python
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-# Salin seluruh proyek
-COPY . .
+# Expose port (opsional)
+EXPOSE 8000
 
-# Jalankan Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "recommendation_app.wsgi:application"]
+# Jalankan server
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

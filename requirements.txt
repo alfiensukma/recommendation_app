@@ -3,5 +3,6 @@ SemanticScholar
 python-dotenv
 langchain_community
 neomodel
+neo4j
 pandas
 gunicorn

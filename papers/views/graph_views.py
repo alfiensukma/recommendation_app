@@ -8,7 +8,7 @@ from django.http import JsonResponse
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "papers", "data-csv")  # Sesuaikan dengan struktur di container
+DATA_DIR = os.path.join(BASE_DIR, "data-csv")
 PAPERS_PATH = os.path.join(DATA_DIR, "papers.csv")
 PAPER_REFERENCES_PATH = os.path.join(DATA_DIR, "paper-references.csv")
 REFERENCES_PATH = os.path.join(DATA_DIR, "references.csv")
@@ -32,6 +32,7 @@ def clear_neo4j(graph):
 def import_papers(graph, file_path, is_reference=False):
     query = f"""
     LOAD CSV WITH HEADERS FROM 'file:///{os.path.basename(file_path)}' AS row
+    WITH row, apoc.convert.fromJsonMap(row.embedding) AS embeddingJson
     MERGE (p:Paper {{paper_id: row.paper_id}})
     SET p.title = row.title,
         p.authors = split(coalesce(row.authors, ''), ', '),
@@ -42,7 +43,7 @@ def import_papers(graph, file_path, is_reference=False):
         p.external_ids = row.external_ids,
         p.fields_of_study = split(row.fields_of_study, ','),
         p.reference_count = toInteger(row.reference_count),
-        p.embedding = row.embedding
+        p.embedding = embeddingJson.vector
     {'SET p.reference_id = split(row.reference_id, ",")' if not is_reference else ''}
     """
     graph.query(query)
@@ -70,8 +71,8 @@ def generate_knowledge_graph(request):
         if request.method != "GET":
             return JsonResponse({"error": "Method not allowed"}, status=405)
 
-        if not os.path.exists(PAPERS_PATH):
-            return JsonResponse({"error": f"File not found: {PAPERS_PATH}"}, status=400)
+        # if not os.path.exists(PAPERS_PATH):
+        #     return JsonResponse({"error": f"File not found: {PAPERS_PATH}"}, status=400)
 
         # Inisialisasi Neo4jGraph di dalam fungsi
         graph = get_neo4j_graph()
@@ -89,11 +90,6 @@ def generate_knowledge_graph(request):
             "papers_processed": papers_count,
             "paper_references_processed": paper_references_count,
             "references_processed": references_count,
-            "csv_files": {
-                "papers": PAPERS_PATH,
-                "paper_references": PAPER_REFERENCES_PATH,
-                "references": REFERENCES_PATH
-            }
         }, status=200)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
