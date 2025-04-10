@@ -30,29 +30,53 @@ def clear_neo4j(graph):
     graph.query("MATCH (n) DETACH DELETE n")
 
 def import_papers(graph, file_path, is_reference=False):
+    # Query untuk import Paper dan Author serta relasi dasar
     query = f"""
     LOAD CSV WITH HEADERS FROM 'file:///{os.path.basename(file_path)}' AS row
-    WITH row, apoc.convert.fromJsonMap(row.embedding) AS embeddingJson
-    MERGE (p:Paper {{paper_id: row.paper_id}})
-    SET p.title = row.title,
-        p.authors = split(coalesce(row.authors, ''), ', '),
+    MERGE (p:Paper {{paperId: row.paperId}})
+    SET p.corpusId = row.corpusId,
+        p.externalIds = row.externalIds,
+        p.title = row.title,
         p.year = toInteger(row.year),
-        p.publication_date = row.publication_date,
         p.abstract = row.abstract,
         p.url = row.url,
-        p.external_ids = row.external_ids,
-        p.fields_of_study = split(row.fields_of_study, ','),
-        p.reference_count = toInteger(row.reference_count),
-        p.embedding = embeddingJson.vector
-    {'SET p.reference_id = split(row.reference_id, ",")' if not is_reference else ''}
+        p.publicationDate = row.publicationDate,
+        p.fieldsOfStudy = split(row.fieldsOfStudy, ';'),
+        p.s2FieldsOfStudy = split(row.s2FieldsOfStudy, ';'),
+        p.venue = row.venue,
+        p.publicationVenue = row.publicationVenue,
+        p.citationCount = toInteger(row.citationCount),
+        p.influentialCitationCount = toInteger(row.influentialCitationCount),
+        p.publicationTypes = split(row.publicationTypes, ';'),
+        p.journal = row.journal,
+        p.citationStyles = row.citationStyles,
+        p.embedding = apoc.convert.fromJsonList(row.embedding),
+        p.referenceCount = toInteger(row.referenceCount)
+    {'SET p.reference_id = split(row.reference_id, ";")' if not is_reference else ''}
+
+    WITH p, apoc.convert.fromJsonList(row.authors) AS authors
+    UNWIND authors AS author
+    MERGE (a:Author {{authorId: author.authorId}})
+    SET a.name = author.name
+    MERGE (p)-[:AUTHORED_BY]->(a)
+    
+    WITH p, authors
+    UNWIND apoc.coll.combinations(authors, 2, 2) AS pair
+    WITH p, pair[0] AS a1, pair[1] AS a2
+    WHERE a1.authorId < a2.authorId
+    MERGE (author1:Author {{authorId: a1.authorId}})
+    MERGE (author2:Author {{authorId: a2.authorId}})
+    MERGE (author1)-[r:COLLABORATED_WITH]->(author2)
+    ON CREATE SET r.weight = 1, r.papers = [p.paperId]
+    ON MATCH SET r.weight = r.weight + 1, r.papers = r.papers + p.paperId
     """
     graph.query(query)
 
 def import_references(graph):
     query = f"""
     LOAD CSV WITH HEADERS FROM 'file:///{os.path.basename(REFERENCES_PATH)}' AS row
-    MATCH (source:Paper {{paper_id: row.source_id}})
-    MATCH (target:Paper {{paper_id: row.target_id}})
+    MATCH (source:Paper {{paperId: row.source_id}})
+    MATCH (target:Paper {{paperId: row.target_id}})
     MERGE (source)-[:REFERENCES]->(target)
     """
     graph.query(query)
@@ -60,10 +84,10 @@ def import_references(graph):
 def import_to_neo4j(graph):
     clear_neo4j(graph)
     import_papers(graph, PAPERS_PATH)
-    if os.path.exists(PAPER_REFERENCES_PATH):
-        import_papers(graph, PAPER_REFERENCES_PATH, is_reference=True)
-    if os.path.exists(REFERENCES_PATH):
-        import_references(graph)
+    # if os.path.exists(PAPER_REFERENCES_PATH):
+    #     import_papers(graph, PAPER_REFERENCES_PATH, is_reference=True)
+    # if os.path.exists(REFERENCES_PATH):
+    #     import_references(graph)
 
 @csrf_exempt
 def generate_knowledge_graph(request):
@@ -71,10 +95,6 @@ def generate_knowledge_graph(request):
         if request.method != "GET":
             return JsonResponse({"error": "Method not allowed"}, status=405)
 
-        # if not os.path.exists(PAPERS_PATH):
-        #     return JsonResponse({"error": f"File not found: {PAPERS_PATH}"}, status=400)
-
-        # Inisialisasi Neo4jGraph di dalam fungsi
         graph = get_neo4j_graph()
         
         # Impor data ke Neo4j

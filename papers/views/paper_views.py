@@ -1,6 +1,7 @@
 import os
 import asyncio
 import csv
+import json
 from semanticscholar import SemanticScholar
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -21,25 +22,39 @@ def save_to_csv(file_path, data, fieldnames, mode='w'):
             writer.writeheader()
         for row in data:
             csv_row = {key: str(row.get(key, '')) for key in fieldnames}
-            if 'authors' in csv_row and row['authors']:
-                csv_row['authors'] = ', '.join([author for author in row['authors'] if author])
             if 'reference_id' in csv_row:
-                csv_row['reference_id'] = ','.join(csv_row['reference_id']) if csv_row['reference_id'] else ''
+                csv_row['reference_id'] = ';'.join(csv_row['reference_id']) if csv_row['reference_id'] else ''
             writer.writerow(csv_row)
 
 # Helper function to create paper info dictionary
 def create_paper_info(paper, include_references=False, reference_limit=None):
+    s2_fields = [f"{field['category']}" for field in (paper.s2FieldsOfStudy or []) if 'category' in field] if hasattr(paper, 's2FieldsOfStudy') else []
+    
+    authors_data = [
+        {"authorId": str(author.authorId), "name": str(author.name).strip()}
+        for author in (paper.authors or []) if hasattr(author, 'authorId') and author.authorId
+    ]
+    
     paper_info = {
-        "paper_id": str(paper.paperId or ""),
-        "external_ids": str(paper.externalIds or ""),
-        "fields_of_study": ','.join(paper.fieldsOfStudy or []),
+        "paperId": str(paper.paperId or ""),
+        "corpusId": str(paper.corpusId or ""),
+        "externalIds": str(paper.externalIds or ""),
+        "authors": json.dumps(authors_data),
         "title": str(paper.title or ""),
-        "authors": [str(author.name).strip() for author in (paper.authors or [])],
         "year": str(paper.year or ""),
-        "publication_date": str(paper.publicationDate or ""),
         "abstract": str(paper.abstract or ""),
         "url": str(paper.url or ""),
-        "embedding": str(paper.embedding or ""),
+        "publicationDate": str(paper.publicationDate or ""),
+        "fieldsOfStudy": ";".join(paper.fieldsOfStudy or []),
+        "s2FieldsOfStudy": ";".join(s2_fields),
+        "venue": str(paper.venue or ""),
+        "publicationVenue": str(paper.publicationVenue or ""),
+        "citationCount": str(paper.citationCount or 0),
+        "influentialCitationCount": str(paper.influentialCitationCount or 0),
+        "publicationTypes": ";".join(paper.publicationTypes or []),
+        "journal": str(paper.journal or ""),
+        "citationStyles": str(paper.citationStyles or ""),
+        "embedding": json.dumps(paper.embedding['vector'] if paper.embedding and 'vector' in paper.embedding else []),
         "referenceCount": str(paper.referenceCount or 0),
     }
     if include_references and hasattr(paper, 'references'):
@@ -51,10 +66,15 @@ def create_paper_info(paper, include_references=False, reference_limit=None):
 def get_paper_detail(request, paper_id):
     try:
         paper = sch.get_paper(paper_id)
-        return JsonResponse({
-            "message": "Paper details fetched successfully",
-            "data": create_paper_info(paper)
-        }, status=200)
+        paper_info = create_paper_info(paper)
+        # filtering abstract, fieldsOfStudy, and embedding
+        if paper_info["abstract"] and paper_info["fieldsOfStudy"] and paper_info["embedding"]:
+            return JsonResponse({
+                "message": "Paper details fetched successfully",
+                "data": paper_info
+            }, status=200)
+        else:
+            return JsonResponse({"message": "Paper lacks required fields (abstract, fieldsOfStudy, or embedding)", "data": {}}, status=200)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
@@ -65,38 +85,55 @@ def get_paper(request):
             return JsonResponse({"error": "Method not allowed"}, status=405)
 
         query = request.GET.get('query', '')
-        min_year = int(request.GET.get('min_year', 2020)) # tahun minimum (contoh "2020-", artinya tahun 2020 ke atas)
+        min_year = int(request.GET.get('min_year', 2020))
         fields_of_study = request.GET.get('fields_of_study', 'Computer Science')
-        reference_limit = request.GET.get('reference_limit', 20) # limit untuk mendapatkan paper referensi dari setiap paper
-        bulk = request.GET.get('bulk', 'false').lower() == 'true' # pencarian secara = relevance search (bulk false) atau bulk retrieval search (bulk true)
-        limit = int(request.GET.get('limit', 100)) #  bulk mode limit = 1000, relevance mode limit = 100
-        
-        reference_limit = int(reference_limit) if reference_limit is not None else None
+        reference_limit = request.GET.get('reference_limit', 20)
+        bulk = request.GET.get('bulk', 'false').lower() == 'true'
+        limit = int(request.GET.get('limit', 100))
 
-        # get data paper from Semantic Scholar
+        reference_limit = int(reference_limit) if reference_limit is not None else None
+        if bulk and limit > 1000:
+            limit = 1000
+        elif not bulk and limit > 100:
+            limit = 100
+
+        # Get data paper from Semantic Scholar
         results = sch.search_paper(
             query, year=f"{min_year}-", limit=limit,
             fields_of_study=[fields_of_study],
-            fields=['paperId', 'title', 'authors', 'year', 'publicationDate', 'fieldsOfStudy', 'abstract', 'url', 'references', 'externalIds', 'embedding', 'referenceCount'],
+            fields=['paperId', 'corpusId', 'externalIds', 'authors', 'title', 'year', 'abstract', 'url', 'publicationDate', 'fieldsOfStudy', 's2FieldsOfStudy', 'venue', 'publicationVenue', 'citationCount', 'influentialCitationCount', 'publicationTypes', 'journal', 'citationStyles', 'embedding', 'references', 'referenceCount']
         )
 
         if not results:
             return JsonResponse({"message": "No papers found", "data": []}, status=200)
 
+        # Filter dan buat data paper
         paper_data = [
             create_paper_info(paper, include_references=True, reference_limit=reference_limit)
-            for paper in results if paper.year and paper.year >= min_year
+            for paper in results
+            if paper.year and paper.year >= min_year and paper.abstract and paper.fieldsOfStudy and paper.embedding
         ][:limit]
+
+        if not paper_data:
+            return JsonResponse({"message": "No papers found after filtering", "data": []}, status=200)
+
         references_list = [
-            {"source_id": paper["paper_id"], "target_id": ref_id}
+            {"source_id": paper["paperId"], "target_id": ref_id}
             for paper in paper_data for ref_id in paper.get("reference_id", [])
         ]
 
-        # save data paper to CSV
-        paper_fieldnames = ["paper_id", "external_ids", "title", "fields_of_study", "authors", "year", "publication_date", "abstract", "url", "reference_count", "embedding"]
-        save_to_csv(PAPERS_PATH, paper_data, paper_fieldnames, mode='w')
+        # Define fieldnames untuk CSV
+        paper_fieldnames = [
+            "paperId", "corpusId", "externalIds", "authors", "title", "year", "abstract", "url",
+            "publicationDate", "fieldsOfStudy", "s2FieldsOfStudy", "venue", "publicationVenue",
+            "citationCount", "influentialCitationCount", "publicationTypes", "journal",
+            "citationStyles", "embedding", "referenceCount"
+        ]
+        
+        # Simpan ke CSV
+        save_to_csv(PAPERS_PATH, paper_data, paper_fieldnames, mode='a')
 
-        # save data references to CSV
+        # Simpan referensi ke CSV
         reference_fieldnames = ["source_id", "target_id"]
         save_to_csv(REFERENCES_PATH, references_list, reference_fieldnames, mode='w')
 
@@ -114,13 +151,16 @@ def get_paper(request):
 async def get_paper_reference(target_id):
     try:
         paper = await asyncio.to_thread(sch.get_paper, target_id, 
-            fields=['paperId', 'title', 'authors', 'year', 'publicationDate', 'fieldsOfStudy', 'abstract', 'url', 'externalIds', 'referenceCount', 'embedding'])
-        return create_paper_info(paper)
+            fields=['paperId', 'corpusId', 'externalIds', 'authors', 'title', 'year', 'abstract', 'url', 'publicationDate', 'fieldsOfStudy', 's2FieldsOfStudy', 'venue', 'publicationVenue', 'citationCount', 'influentialCitationCount', 'publicationTypes', 'journal', 'citationStyles', 'embedding', 'referenceCount'])
+        paper_info = create_paper_info(paper)
+        # filtering abstract, fieldsOfStudy, and embedding
+        if paper_info["abstract"] and paper_info["fieldsOfStudy"] and paper_info["embedding"]:
+            return paper_info
+        return None
     except Exception as e:
         print(f"Error fetching paper {target_id}: {e}")
         return None
 
-# Fetch papers by reference IDs (async)
 @csrf_exempt
 def fetch_papers_by_reference_ids(request):
     try:
@@ -144,9 +184,14 @@ def fetch_papers_by_reference_ids(request):
         paper_data = asyncio.run(fetch_all())
         paper_data = [paper for paper in paper_data if paper is not None]
 
-        # save data to CSV
+        # Simpan ke CSV jika ada data
         if paper_data:
-            paper_fieldnames = ["paper_id", "external_ids", "title", "fields_of_study", "authors", "year", "publication_date", "abstract", "url", "reference_count", "embedding"]
+            paper_fieldnames = [
+                "paperId", "corpusId", "externalIds", "authors", "title", "year", "abstract", "url",
+                "publicationDate", "fieldsOfStudy", "s2FieldsOfStudy", "venue", "publicationVenue",
+                "citationCount", "influentialCitationCount", "publicationTypes", "journal",
+                "citationStyles", "embedding", "referenceCount"
+            ]
             save_to_csv(PAPER_REFERENCES_PATH, paper_data, paper_fieldnames, mode='a')
 
         return JsonResponse({
