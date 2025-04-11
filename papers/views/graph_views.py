@@ -37,6 +37,7 @@ def import_papers(graph, file_path, is_reference=False):
     SET p.corpusId = row.corpusId,
         p.externalIds = row.externalIds,
         p.title = row.title,
+        p.authors = [author IN apoc.convert.fromJsonList(row.authors) | author.name],
         p.year = toInteger(row.year),
         p.abstract = row.abstract,
         p.url = row.url,
